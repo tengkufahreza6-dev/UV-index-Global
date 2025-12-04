@@ -192,6 +192,22 @@
                                     </div>
                                 </div>
                                 <div class="api-item">
+                                    <img src="weatherAPI-logo.png" 
+                                         alt="weatherAPI" class="api-logo">
+                                    <div>
+                                        <strong>weatherAPI</strong>
+                                        <small>Data cuaca & UV real-time</small>
+                                    </div>
+                                </div>
+                                <div class="api-item">
+                                    <img src="visualcrossing-logo.png" 
+                                         alt="visualcrossing" class="api-logo">
+                                    <div>
+                                        <strong>visualcrossing</strong>
+                                        <small>Data cuaca & UV real-time</small>
+                                    </div>
+                                </div>
+                                <div class="api-item">
                                     <img src="BMKG-logo.png" 
                                          alt="BMKG" class="api-logo">
                                     <div>
@@ -297,23 +313,38 @@
 
                         <!-- Additional Weather Info -->
                         <div class="additional-weather">
-                            <div class="weather-detail">
-                                <span><i class="fas fa-tachometer-alt"></i> Tekanan:</span>
-                                <strong id="pressureText">- hPa</strong>
-                            </div>
-                            <div class="weather-detail">
-                                <span><i class="fas fa-wind"></i> Angin:</span>
-                                <strong id="windText">- m/s</strong>
-                            </div>
-                            <div class="weather-detail">
-                                <span><i class="fas fa-cloud"></i> Awan:</span>
-                                <strong id="cloudsText">- %</strong>
-                            </div>
-                            <div class="weather-detail">
-                                <span><i class="fas fa-globe-asia"></i> Koordinat:</span>
-                                <strong id="coordinatesText">-6.2088, 106.8456</strong>
-                            </div>
-                        </div>
+    <div class="weather-detail">
+        <span><i class="fas fa-tachometer-alt"></i> Tekanan:</span>
+        <strong id="pressureText">- hPa</strong>
+    </div>
+    <div class="weather-detail">
+        <span><i class="fas fa-wind"></i> Angin:</span>
+        <strong id="windText">- m/s</strong>
+    </div>
+    <div class="weather-detail">
+        <span><i class="fas fa-cloud"></i> Awan:</span>
+        <strong id="cloudsText">- %</strong>
+    </div>
+    <div class="weather-detail">
+        <span><i class="fas fa-globe-asia"></i> Koordinat:</span>
+        <strong id="coordinatesText">-6.2088, 106.8456</strong>
+    </div>
+    
+    <!-- ELEMEN BARU YANG DITAMBAHKAN -->
+    <div class="weather-detail">
+        <span><i class="fas fa-clock"></i> Status Waktu:</span>
+        <strong id="timeStatus">-</strong>
+    </div>
+    <div class="weather-detail">
+        <span><i class="fas fa-globe"></i> Zona Waktu:</span>
+        <strong id="timezoneInfo">-</strong>
+    </div>
+    <div class="weather-detail">
+        <span><i class="fas fa-sun"></i> Periode:</span>
+        <strong id="dayNightIndicator">-</strong>
+    </div>
+</div>
+
 
                         <!-- Data Source Info -->
                         <div class="data-source">
@@ -1310,9 +1341,6 @@
         console.log("Options count:", select.options.length);
         console.log("Current value:", select.value);
         
-        // Cek event listeners
-        const listeners = getEventListeners(select);
-        console.log("Event listeners:", listeners);
         
         // Test: tambah satu provinsi manual
         const testOption = new Option('TEST: DKI Jakarta (Jakarta)', '-6.2088,106.8456');

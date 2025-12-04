@@ -11,22 +11,48 @@ class UVGuardPro {
         this.regressionModel = null;
         this.derivativeModel = null;
         
+        
         // API Configuration
         this.API_CONFIG = {
-            apiKey1: "7c147cbc7723582a81895d13c584fb31",  
+            // Untuk kompatibilitas dengan kode lama
+            apiKey1: "7c147cbc7723582a81895d13c584fb31",
             apiKey2: "c5e0d6bf87b5b5260a35352e699409a6",
             apiKey3: "8330042657054aafedcfd960d14eda1d",
             currentKeyIndex: 0,
-            
             baseUrl: "https://api.openweathermap.org/data/2.5",
-            geoUrl: "https://api.openweathermap.org/geo/1.0",
-            endpoints: {
-                weather: "/weather",
-                uv: "/uvi",
-                forecast: "/forecast"
-            }
+            geoUrl: "https://api.openweathermap.org/geo/1.0"
         };
         
+        this.MULTI_API_CONFIG = {
+            // OpenWeatherMap (3 key untuk failover)
+            openweather: {
+                keys: [
+                    "7c147cbc7723582a81895d13c584fb31",
+                    "c5e0d6bf87b5b5260a35352e699409a6",
+                    "8330042657054aafedcfd960d14eda1d"
+                ],
+                currentKeyIndex: 0,
+                baseUrl: "https://api.openweathermap.org/data/2.5"
+            },
+            
+            // WeatherAPI.com (key kamu)
+            weatherapi: {
+                key: "d92bc5798de74504a8a20859250412",
+                baseUrl: "https://api.weatherapi.com/v1"
+            },
+            
+            // Visual Crossing (key kamu)
+            visualcrossing: {
+                key: "KD56SWLAEN7EFXT3LM7LUTS6U",
+                baseUrl: "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
+            },
+            
+            // Settings
+            useMultipleSources: true,
+            enableFallback: true,
+            timeout: 10000
+        };
+
         // Data provinsi Indonesia
         this.INDONESIA_PROVINCES = [
             { id: 1, name: "DKI Jakarta", capital: "Jakarta", lat: -6.2088, lon: 106.8456 },
@@ -70,12 +96,45 @@ class UVGuardPro {
         
         // UV Thresholds
         this.UV_THRESHOLDS = {
-            low: { min: 0, max: 2, level: "Rendah", color: "#00cc00" },
-            moderate: { min: 3, max: 5, level: "Sedang", color: "#ffcc00" },
-            high: { min: 6, max: 7, level: "Tinggi", color: "#ff6600" },
-            veryHigh: { min: 8, max: 10, level: "Sangat Tinggi", color: "#ff3300" },
+            low: { min: 0, max: 2.9, level: "Rendah", color: "#00cc00" },
+            moderate: { min: 3, max: 5.9, level: "Sedang", color: "#ffcc00" },
+            high: { min: 6, max: 7.9, level: "Tinggi", color: "#ff6600" },
+            veryHigh: { min: 8, max: 10.9, level: "Sangat Tinggi", color: "#ff3300" },
             extreme: { min: 11, max: 20, level: "Ekstrem", color: "#cc00cc" }
         };
+
+        // Southeast Asia detection
+        this.isInSoutheastAsia = function(lat, lon) {
+            // ASEAN region boundaries
+            const inLatRange = lat > -11 && lat < 23;
+            const inLonRange = lon > 95 && lon < 127;
+            return inLatRange && inLonRange;
+        };
+        
+        // Indonesia detection
+        this.isInIndonesia = function(lat, lon) {
+            return lat > -11 && lat < 6 && lon > 95 && lon < 141;
+        };
+        
+        // Singapore detection
+        this.isInSingapore = function(lat, lon) {
+            return lat > 1.2 && lat < 1.5 && lon > 103.6 && lon < 104.0;
+        };
+        
+        // Malaysia detection
+        this.isInMalaysia = function(lat, lon) {
+            // Peninsula Malaysia + East Malaysia (Borneo)
+            const inPeninsula = lat > 1 && lat < 7 && lon > 100 && lon < 105;
+            const inBorneo = lat > 1 && lat < 7 && lon > 110 && lon < 119;
+            return inPeninsula || inBorneo;
+        };
+        
+        // Logging function
+        this.logUVCorrection = function(originalUV, correctedUV, lat, lon, cityName) {
+            console.log(`📊 UV Correction: ${cityName}`);
+            console.log(`   ${originalUV.toFixed(1)} → ${correctedUV.toFixed(1)}`);
+        };
+
         
         // Initialize
         this.initSunAnimation();
@@ -188,17 +247,23 @@ class UVGuardPro {
 initProvinceSelect() {
     console.log("🔄 Loading province dropdown...");
     
-    // 1. Cari dropdownnya
     const dropdown = document.getElementById('provinceSelect');
     if (!dropdown) {
         console.error("❌ Dropdown not found!");
+        // Coba cari lagi dengan delay
+        setTimeout(() => {
+            const retryDropdown = document.getElementById('provinceSelect');
+            if (retryDropdown) {
+                this.initProvinceSelect();
+            }
+        }, 1000);
         return;
     }
     
-    // 2. Kosongkan dulu
+    // Clear existing options
     dropdown.innerHTML = '<option value="">-- Pilih Provinsi Indonesia --</option>';
     
-    // 3. Isi dengan data provinsi
+    // Add provinces
     this.INDONESIA_PROVINCES.forEach(prov => {
         const option = document.createElement('option');
         option.value = `${prov.lat},${prov.lon}`;
@@ -208,22 +273,23 @@ initProvinceSelect() {
     
     console.log(`✅ Loaded ${this.INDONESIA_PROVINCES.length} provinces`);
     
-    // 4. Event handler SANGAT SIMPEL
+    // Add event listener
     dropdown.addEventListener('change', (e) => {
         if (!e.target.value) return;
         
-        // Ambil data dari value (format: "lat,lon")
         const [lat, lon] = e.target.value.split(',').map(Number);
         const selectedText = e.target.options[e.target.selectedIndex].text;
         
-        // Parse nama kota dari text (format: "Provinsi (Kota)")
+        // Parse province and city names
+        const provinceMatch = selectedText.match(/^(.+?)\(/);
         const cityMatch = selectedText.match(/\(([^)]+)\)/);
-        const cityName = cityMatch ? cityMatch[1] : selectedText.split('(')[0].trim();
-        const provinceName = selectedText.split('(')[0].trim();
+        
+        const provinceName = provinceMatch ? provinceMatch[1].trim() : selectedText;
+        const cityName = cityMatch ? cityMatch[1].trim() : provinceName;
         
         console.log(`📍 Selected: ${provinceName} - ${cityName} (${lat}, ${lon})`);
         
-        // Set lokasi
+        // Update current location
         this.currentLocation = {
             lat: lat,
             lon: lon,
@@ -241,16 +307,39 @@ initProvinceSelect() {
         if (latInput) latInput.value = lat;
         if (lonInput) lonInput.value = lon;
         
-        // Tampilkan notifikasi
-        this.showNotification(`${provinceName} dipilih`, "success");
+        // Show notification
+        this.showNotification(`Provinsi ${provinceName} dipilih`, "success");
         
-        // Ambil data
+        // Update location status
+        this.updateLocationStatus(`Lokasi: ${provinceName}, Indonesia`);
+        
+        // Fetch data after a short delay
         setTimeout(() => {
             this.fetchData();
-        }, 500);
+        }, 800);
     });
-}
     
+    // Trigger change event jika ada lokasi yang disimpan
+    setTimeout(() => {
+        if (this.currentLocation && this.currentLocation.lat && this.currentLocation.lon) {
+            const lat = this.currentLocation.lat;
+            const lon = this.currentLocation.lon;
+            
+            // Cari option yang cocok
+            for (let i = 0; i < dropdown.options.length; i++) {
+                const option = dropdown.options[i];
+                if (option.value === `${lat},${lon}` || 
+                    option.text.includes(this.currentLocation.name) ||
+                    option.text.includes(this.currentLocation.province)) {
+                    dropdown.selectedIndex = i;
+                    dropdown.dispatchEvent(new Event('change'));
+                    break;
+                }
+            }
+        }
+    }, 1500);
+}
+
     initSkinTypeSelector() {
         const select = document.getElementById('skinTypeSelect');
         if (!select) return;
@@ -621,7 +710,7 @@ initProvinceSelect() {
                 geoOptions
             );
         });
-        
+
         console.log("✅ Geolocation success:", position);
         
         const lat = position.coords.latitude;
@@ -701,6 +790,40 @@ initProvinceSelect() {
         }, 2000);
     }
 }
+
+useDefaultLocationFallback() {
+        console.log("🔄 Using default location fallback...");
+        
+        // Set ke Jakarta sebagai default
+        this.currentLocation = {
+            lat: -6.2088,
+            lon: 106.8456,
+            name: "Jakarta",
+            province: "DKI Jakarta",
+            country: "ID"
+        };
+        
+        // Update input fields
+        const cityInput = document.getElementById('cityInput');
+        const latInput = document.getElementById('latInput');
+        const lonInput = document.getElementById('lonInput');
+        
+        if (cityInput) cityInput.value = "Jakarta, Indonesia";
+        if (latInput) latInput.value = "-6.2088";
+        if (lonInput) lonInput.value = "106.8456";
+        
+        // Update status
+        this.updateLocationStatus("Lokasi default: Jakarta, Indonesia");
+        this.showNotification("Menggunakan lokasi default Jakarta", "info");
+        
+        console.log("📍 Default fallback location: Jakarta");
+        
+        // Fetch data setelah 1 detik
+        setTimeout(() => {
+            this.fetchData();
+        }, 1000);
+    }
+
 
 // Helper untuk update input fields
 updateLocationInputs(name, lat, lon) {
@@ -851,112 +974,109 @@ updateLocationInputs(name, lat, lon) {
     
     // Geocode menggunakan OpenWeatherMap API
     async geocodeCity(cityName) {
-        // Check cache first
-        const cacheKey = cityName.toLowerCase();
-        if (this.geoCache.has(cacheKey)) {
-            console.log("Using cached geocode result");
-            return this.geoCache.get(cacheKey);
-        }
-        
-        const apiKeys = [
-            this.API_CONFIG.apiKey1,
-            this.API_CONFIG.apiKey2,
-            this.API_CONFIG.apiKey3
-        ];
-        
-        for (let i = 0; i < apiKeys.length; i++) {
-            const apiKey = apiKeys[i];
-            
-            if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
-                continue;
-            }
-            
-            try {
-                // Format: city name, state code (optional), country code (optional)
-                const geocodeUrl = `${this.API_CONFIG.geoUrl}/direct?q=${encodeURIComponent(cityName)}&limit=5&appid=${apiKey}`;
-                
-                console.log(`Geocoding: ${cityName} with API key ${i+1}...`);
-                const response = await fetch(geocodeUrl);
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    
-                    if (data && data.length > 0) {
-                        // Ambil hasil pertama (yang paling relevan)
-                        const result = data[0];
-                        const geoData = {
-                            name: result.name,
-                            lat: result.lat,
-                            lon: result.lon,
-                            country: result.country,
-                            state: result.state || ""
-                        };
-                        
-                        // Cache the result
-                        this.geoCache.set(cacheKey, geoData);
-                        
-                        console.log(`Geocode successful: ${result.name}, ${result.country}`);
-                        return geoData;
-                    }
-                } else {
-                    console.warn(`Geocoding API error with key ${i+1}: ${response.status}`);
-                }
-                
-            } catch (error) {
-                console.error(`Geocoding error with key ${i+1}:`, error.message);
-            }
-        }
-        
-        console.warn("All geocoding attempts failed");
-        return null;
+    console.log(`📍 Geocoding: "${cityName}"`);
+    
+    // Check cache
+    const cacheKey = cityName.toLowerCase().trim();
+    if (this.geoCache.has(cacheKey)) {
+        console.log("📍 Using cached geocode result");
+        return this.geoCache.get(cacheKey);
     }
+    
+    // Pakai OpenWeatherMap Geocoding API
+    const owmConfig = this.MULTI_API_CONFIG.openweather;
+    
+    for (let i = 0; i < owmConfig.keys.length; i++) {
+        const apiKey = owmConfig.keys[i];
+        if (!apiKey) continue;
+        
+        try {
+            const geocodeUrl = `https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(cityName)}&limit=5&appid=${apiKey}`;
+            
+            console.log(`📍 Trying OpenWeatherMap key ${i+1}...`);
+            const response = await fetch(geocodeUrl);
+            
+            if (response.ok) {
+                const data = await response.json();
+                
+                if (data && data.length > 0) {
+                    const result = data[0];
+                    const geoData = {
+                        name: result.name,
+                        lat: result.lat,
+                        lon: result.lon,
+                        country: result.country,
+                        state: result.state || ""
+                    };
+                    
+                    // Cache hasilnya
+                    this.geoCache.set(cacheKey, geoData);
+                    
+                    console.log(`📍 Found: ${result.name}, ${result.country} (${result.lat}, ${result.lon})`);
+                    return geoData;
+                } else {
+                    console.warn(`📍 No results found for "${cityName}"`);
+                    return null;
+                }
+            } else {
+                console.warn(`📍 Geocoding failed with key ${i+1}: ${response.status}`);
+            }
+            
+        } catch (error) {
+            console.error(`📍 Geocoding error with key ${i+1}:`, error.message);
+        }
+    }
+    
+    console.warn(`📍 All geocoding attempts failed for "${cityName}"`);
+    return null;
+}
+
     
     // Reverse geocode coordinates to city name
     async reverseGeocode(lat, lon) {
-        const cacheKey = `${lat.toFixed(4)},${lon.toFixed(4)}`;
-        
-        if (this.geoCache.has(cacheKey)) {
-            return this.geoCache.get(cacheKey);
-        }
-        
-        const apiKeys = [
-            this.API_CONFIG.apiKey1,
-            this.API_CONFIG.apiKey2,
-            this.API_CONFIG.apiKey3
-        ];
-        
-        for (let i = 0; i < apiKeys.length; i++) {
-            const apiKey = apiKeys[i];
-            
-            if (!apiKey) continue;
-            
-            try {
-                const reverseUrl = `${this.API_CONFIG.geoUrl}/reverse?lat=${lat}&lon=${lon}&limit=1&appid=${apiKey}`;
-                
-                const response = await fetch(reverseUrl);
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    
-                    if (data && data.name) {
-                        const result = {
-                            city: data.name,
-                            country: data.country || "XX",
-                            state: data.state || ""
-                        };
-                        
-                        this.geoCache.set(cacheKey, result);
-                        return result;
-                    }
-                }
-            } catch (error) {
-                console.warn(`Reverse geocoding error with key ${i+1}:`, error);
-            }
-        }
-        
-        // Fallback to demo location name
-        return { city: "Lokasi Anda", country: "XX", state: "" };
+    const cacheKey = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+    
+    if (this.geoCache.has(cacheKey)) {
+        return this.geoCache.get(cacheKey);
     }
+    
+    // Pakai OpenWeatherMap Reverse Geocoding
+    const owmConfig = this.MULTI_API_CONFIG.openweather;
+    
+    for (let i = 0; i < owmConfig.keys.length; i++) {
+        const apiKey = owmConfig.keys[i];
+        if (!apiKey) continue;
+        
+        try {
+            const reverseUrl = `https://api.openweathermap.org/geo/1.0/reverse?lat=${lat}&lon=${lon}&limit=1&appid=${apiKey}`;
+            
+            const response = await fetch(reverseUrl);
+            
+            if (response.ok) {
+                const data = await response.json();
+                
+                if (data && data.length > 0) {
+                    const result = {
+                        city: data[0].name,
+                        country: data[0].country || "XX",
+                        state: data[0].state || ""
+                    };
+                    
+                    this.geoCache.set(cacheKey, result);
+                    console.log(`📍 Reverse geocode: ${result.city}, ${result.country}`);
+                    return result;
+                }
+            }
+        } catch (error) {
+            console.warn(`📍 Reverse geocoding error with key ${i+1}:`, error);
+        }
+    }
+    
+    // Fallback
+    console.log(`📍 Reverse geocode failed for (${lat}, ${lon})`);
+    return { city: "Lokasi Anda", country: "XX", state: "" };
+}
+
     
     useCoordinates() {
         const latInput = document.getElementById('latInput');
@@ -1002,202 +1122,432 @@ updateLocationInputs(name, lat, lon) {
     
     // ==================== API METHODS ====================
     async testAPIConnection() {
-        console.log("🔌 Testing API connection...");
+    console.log("🔌 Testing API connection...");
+    
+    // Test OpenWeatherMap dari MULTI_API_CONFIG
+    const owmConfig = this.MULTI_API_CONFIG.openweather;
+    
+    for (let i = 0; i < owmConfig.keys.length; i++) {
+        const apiKey = owmConfig.keys[i];
         
-        const apiKeys = [
-            this.API_CONFIG.apiKey1,
-            this.API_CONFIG.apiKey2,
-            this.API_CONFIG.apiKey3
-        ];
+        if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
+            console.warn(`⚠️ OpenWeatherMap key ${i+1} tidak valid`);
+            continue;
+        }
         
-        for (let i = 0; i < apiKeys.length; i++) {
-            const apiKey = apiKeys[i];
+        try {
+            const testUrl = `https://api.openweathermap.org/data/2.5/weather?q=Jakarta&appid=${apiKey}&units=metric`;
             
-            if (!apiKey || apiKey === "YOUR_API_KEY_HERE") {
-                console.warn(`⚠️ API key ${i+1} tidak valid`);
-                continue;
-            }
+            console.log(`🔍 Testing OpenWeatherMap key ${i+1}...`);
+            const response = await fetch(testUrl);
             
-            try {
-                const testUrl = `https://api.openweathermap.org/data/2.5/weather?q=Jakarta&appid=${apiKey}&units=metric`;
+            if (response.ok) {
+                console.log(`✅ OpenWeatherMap key ${i+1}: CONNECTED`);
+                owmConfig.currentKeyIndex = i;
                 
-                console.log(`Testing API key ${i+1}...`);
-                const response = await fetch(testUrl, {
-                    method: 'GET',
-                    headers: {
-                        'Accept': 'application/json',
-                    }
-                });
-                
-                if (response.ok) {
-                    console.log(`✅ API connection successful with key ${i+1}`);
-                    this.API_CONFIG.currentKeyIndex = i;
-                    this.isDemoMode = false;
-                    this.updateAPIStatus(true);
-                    return true;
-                } else {
-                    console.warn(`⚠️ API key ${i+1} failed: ${response.status}`);
+                // Test multi-source jika aktif
+                if (this.MULTI_API_CONFIG.useMultipleSources) {
+                    console.log("🔍 Testing multi-source providers...");
+                    await this.testMultiSourceAPIs();
                 }
                 
-            } catch (error) {
-                console.error(`❌ API key ${i+1} test failed:`, error.message);
+                this.isDemoMode = false;
+                this.updateAPIStatus(true);
+                return true;
+            } else {
+                console.warn(`⚠️ OpenWeatherMap key ${i+1} failed: ${response.status}`);
+            }
+            
+        } catch (error) {
+            console.error(`❌ OpenWeatherMap key ${i+1} error:`, error.message);
+        }
+    }
+    
+    // Jika OpenWeatherMap gagal semua, coba WeatherAPI.com
+    console.log("🔍 Testing WeatherAPI.com...");
+    try {
+        const weatherapiKey = this.MULTI_API_CONFIG.weatherapi.key;
+        if (weatherapiKey && weatherapiKey !== "YOUR_WEATHERAPI_KEY") {
+            const testUrl = `https://api.weatherapi.com/v1/current.json?key=${weatherapiKey}&q=Jakarta&aqi=no`;
+            const response = await fetch(testUrl);
+            
+            if (response.ok) {
+                console.log("✅ WeatherAPI.com: CONNECTED");
+                this.isDemoMode = false;
+                this.updateAPIStatus(true);
+                return true;
             }
         }
-        
-        console.warn("⚠️ All API keys failed. Using demo mode.");
-        this.isDemoMode = true;
-        this.updateAPIStatus(false);
-        return false;
+    } catch (error) {
+        console.warn("⚠️ WeatherAPI.com test failed:", error.message);
     }
+    
+    // Jika masih gagal, coba Visual Crossing
+    console.log("🔍 Testing Visual Crossing...");
+    try {
+        const vcKey = this.MULTI_API_CONFIG.visualcrossing.key;
+        if (vcKey && vcKey !== "YOUR_VISUALCROSSING_KEY") {
+            const testUrl = `https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/Jakarta/today?key=${vcKey}&unitGroup=metric`;
+            const response = await fetch(testUrl);
+            
+            if (response.ok) {
+                console.log("✅ Visual Crossing: CONNECTED");
+                this.isDemoMode = false;
+                this.updateAPIStatus(true);
+                return true;
+            }
+        }
+    } catch (error) {
+        console.warn("⚠️ Visual Crossing test failed:", error.message);
+    }
+    
+    console.warn("⚠️ All API tests failed. Using DEMO MODE.");
+    this.isDemoMode = true;
+    this.updateAPIStatus(false);
+    return false;
+}
+
+// ==================== TAMBAHKAN METHOD INI JUGA ====================
+
+async testMultiSourceAPIs() {
+    console.log("🔍 Testing additional API sources...");
+    
+    let availableSources = [];
+    
+    // Test WeatherAPI.com
+    const weatherapiKey = this.MULTI_API_CONFIG.weatherapi.key;
+    if (weatherapiKey && weatherapiKey !== "YOUR_WEATHERAPI_KEY") {
+        try {
+            const url = `https://api.weatherapi.com/v1/current.json?key=${weatherapiKey}&q=Jakarta&aqi=no`;
+            const response = await fetch(url);
+            if (response.ok) {
+                console.log("✅ WeatherAPI.com: AVAILABLE");
+                availableSources.push("WeatherAPI.com");
+            }
+        } catch (error) {
+            console.warn("❌ WeatherAPI.com: NOT AVAILABLE");
+        }
+    }
+    
+    // Test Visual Crossing
+    const vcKey = this.MULTI_API_CONFIG.visualcrossing.key;
+    if (vcKey && vcKey !== "YOUR_VISUALCROSSING_KEY") {
+        try {
+            const url = `https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/Jakarta/today?key=${vcKey}`;
+            const response = await fetch(url);
+            if (response.ok) {
+                console.log("✅ Visual Crossing: AVAILABLE");
+                availableSources.push("Visual Crossing");
+            }
+        } catch (error) {
+            console.warn("❌ Visual Crossing: NOT AVAILABLE");
+        }
+    }
+    
+    console.log(`📡 Available sources: ${availableSources.join(', ') || 'None'}`);
+    return availableSources;
+}
+
     
     updateAPIStatus(connected) {
-        const apiStatus = document.getElementById('apiStatus');
-        if (apiStatus) {
-            if (connected) {
-                apiStatus.innerHTML = '<span class="status-indicator active"></span> <span>API Connected</span>';
-                apiStatus.style.color = '#00cc88';
-            } else {
-                apiStatus.innerHTML = '<span class="status-indicator warning"></span> <span>Demo Mode</span>';
-                apiStatus.style.color = '#ffcc00';
-            }
-        }
+    const apiStatus = document.getElementById('apiStatus');
+    if (!apiStatus) return;
+    
+    if (connected) {
+        apiStatus.innerHTML = '<span class="status-indicator active"></span> <span>API Connected</span>';
+        apiStatus.style.color = '#10b981';
+        apiStatus.title = "Connected to weather API";
+    } else {
+        apiStatus.innerHTML = '<span class="status-indicator warning"></span> <span>Demo Mode</span>';
+        apiStatus.style.color = '#f59e0b';
+        apiStatus.title = "Using demo data (API failed)";
+    }
+}
+
+    
+        async fetchData() {
+        if (!this.currentLocation) {
+        this.showNotification("Pilih lokasi terlebih dahulu", "warning");
+        console.warn("❌ No location selected");
+        return;
     }
     
-    async fetchData() {
-        if (!this.currentLocation) {
-            this.showNotification("Pilih lokasi terlebih dahulu", "warning");
-            return;
-        }
+    try {
+        this.validateCoordinates(this.currentLocation.lat, this.currentLocation.lon);
+    } catch (validationError) {
+        this.showNotification(`Error lokasi: ${validationError.message}`, "error");
+        console.error("❌ Location validation failed:", validationError);
+        return;
+    }
+    
+    console.log("=".repeat(60));
+    console.log("🚀 UV GUARD PRO - DATA FETCH START");
+    console.log(`📍 Location: ${this.currentLocation.name || "Unknown"}`);
+    console.log(`📌 Coordinates: ${this.currentLocation.lat}, ${this.currentLocation.lon}`);
+    console.log("=".repeat(60));
+
         
-        console.log("📥 Fetching data for location:", this.currentLocation);
-        
-        this.showNotification("Mengambil data UV...", "info");
+        this.showNotification("Mengambil data dari multiple sources...", "info");
         this.toggleButtons(false);
         
         try {
             let data;
             
-            if (!this.isDemoMode) {
-                data = await this.fetchAPIData();
-                
-                if (!data) {
-                    console.log("API fetch failed, using demo data");
-                    this.isDemoMode = true;
-                    this.updateAPIStatus(false);
-                    data = await this.generateDemoData();
-                }
-            } else {
+            // ==================== PERUBAHAN BESAR DI SINI ====================
+            // CEK: Apakah multi-source system aktif?
+            const useMultiSource = this.MULTI_API_CONFIG && 
+                                  this.MULTI_API_CONFIG.useMultipleSources === true;
+            
+            console.log(`🔧 System Mode: ${useMultiSource ? 'MULTI-SOURCE' : 'SINGLE-SOURCE'}`);
+            console.log(`🔧 Demo Mode: ${this.isDemoMode ? 'ON' : 'OFF'}`);
+            
+            if (this.isDemoMode) {
+                // Jika demo mode aktif, gunakan demo data
+                console.log("🎭 Using DEMO DATA (demo mode active)");
                 data = await this.generateDemoData();
+                
+            } else if (useMultiSource) {
+                // MULTI-SOURCE MODE: Coba semua provider
+                console.log("🌐 MULTI-SOURCE: Trying all weather providers...");
+                data = await this.fetchFromMultipleSources();
+                
+                // Jika multi-source gagal, coba OpenWeatherMap saja
+                if (!data) {
+                    console.log("⚠️ Multi-source failed, trying OpenWeatherMap alone...");
+                    data = await this.fetchAPIData();
+                }
+                
+            } else {
+                // SINGLE-SOURCE MODE: OpenWeatherMap saja
+                console.log("🌐 SINGLE-SOURCE: Using OpenWeatherMap only");
+                data = await this.fetchAPIData();
+            }
+            // ==================== SAMPAI DI SINI ====================
+            
+            // Jika semua API gagal, fallback ke demo data
+            if (!data) {
+                console.log("❌ ALL API SOURCES FAILED, using DEMO DATA");
+                this.isDemoMode = true;
+                this.updateAPIStatus(false);
+                data = await this.generateDemoData();
+                
+                this.showNotification("Menggunakan data demo (API gagal)", "warning");
+            } else {
+                this.isDemoMode = false;
+                this.updateAPIStatus(true);
+                
+                // Tampilkan notifikasi sumber data
+                const provider = data.provider || data.apiSource || "API";
+                const uvValue = data.uvIndex.toFixed(1);
+                const timeOfDay = data.isDaytime ? "siang" : "malam";
+                
+                this.showNotification(
+                    `Data ${provider}: UV ${uvValue} (${timeOfDay})`, 
+                    "success"
+                );
             }
             
+            // Proses data yang didapat
             if (data) {
+                console.log("✅ DATA RECEIVED SUCCESSFULLY:");
+                console.log(`   Provider: ${data.provider || data.apiSource || "Unknown"}`);
+                console.log(`   UV Index: ${data.uvIndex}`);
+                console.log(`   Temperature: ${data.temperature}°C`);
+                console.log(`   Weather: ${data.weather}`);
+                console.log(`   Time: ${data.isDaytime ? 'Daytime ☀️' : 'Nighttime 🌙'}`);
+                console.log("=".repeat(60));
+                
                 await this.processData(data);
-            } else {
-                throw new Error("No data received");
             }
             
         } catch (error) {
-            console.error("❌ Error fetching data:", error);
-            this.showNotification(`Error: ${error.message}`, "error");
+            console.error("❌ CRITICAL ERROR in fetchData:", error);
+            this.showNotification(`Error sistem: ${error.message}`, "error");
             
+            // Emergency fallback ke demo data
             try {
-                console.log("Trying demo data as fallback...");
+                console.log("🆘 EMERGENCY: Using demo data as last resort...");
                 const demoData = await this.generateDemoData();
                 await this.processData(demoData);
             } catch (demoError) {
-                console.error("Even demo data failed:", demoError);
+                console.error("💥 EVEN DEMO DATA FAILED:", demoError);
+                this.showNotification("Sistem error total. Refresh halaman.", "error");
             }
         } finally {
             this.toggleButtons(true);
+            console.log("✅ Fetch process completed");
         }
     }
     
     async fetchAPIData() {
-        const { lat, lon, name } = this.currentLocation;
-        const apiKeys = [
-            this.API_CONFIG.apiKey1,
-            this.API_CONFIG.apiKey2,
-            this.API_CONFIG.apiKey3
-        ];
+    const { lat, lon, name } = this.currentLocation;
+    const apiConfig = this.MULTI_API_CONFIG.openweather;
+    const apiKeys = apiConfig.keys;
+    const currentApiKey = apiKeys[apiConfig.currentKeyIndex];
+    
+    if (!currentApiKey) {
+        console.warn("No valid API key available for OpenWeatherMap");
+        return null;
+    }
+    
+    try {
+        // Fetch weather data
+        const weatherUrl = `${apiConfig.baseUrl}/weather?lat=${lat}&lon=${lon}&appid=${currentApiKey}&units=metric&lang=id`;
         
-        const currentApiKey = apiKeys[this.API_CONFIG.currentKeyIndex];
+        console.log(`🌐 OpenWeatherMap: Fetching weather data...`);
+        const weatherResponse = await fetch(weatherUrl);
         
-        if (!currentApiKey) {
-            console.warn("No valid API key available");
+        if (!weatherResponse.ok) {
+            console.warn(`❌ OpenWeatherMap weather error: ${weatherResponse.status}`);
+            apiConfig.currentKeyIndex = (apiConfig.currentKeyIndex + 1) % apiKeys.length;
             return null;
         }
+        
+        const weatherData = await weatherResponse.json();
+        
+        // Fetch UV index
+        const uvUrl = `${apiConfig.baseUrl}/uvi?lat=${lat}&lon=${lon}&appid=${currentApiKey}`;
+        let uvIndex = 0;
+        let originalUV = 0;
         
         try {
-            // Fetch weather data
-            const weatherUrl = `${this.API_CONFIG.baseUrl}/weather?lat=${lat}&lon=${lon}&appid=${currentApiKey}&units=metric&lang=id`;
-            
-            console.log(`Fetching weather data from API...`);
-            const weatherResponse = await fetch(weatherUrl);
-            
-            if (!weatherResponse.ok) {
-                console.warn(`Weather API error: ${weatherResponse.status}`);
-                this.API_CONFIG.currentKeyIndex = (this.API_CONFIG.currentKeyIndex + 1) % apiKeys.length;
-                return null;
-            }
-            
-            const weatherData = await weatherResponse.json();
-            
-            // Fetch UV index - PERBAIKAN 2: UV index hanya ada di siang hari
-            const uvUrl = `${this.API_CONFIG.baseUrl}/uvi?lat=${lat}&lon=${lon}&appid=${currentApiKey}`;
-            let uvIndex = 0;
-            let uvResponse;
-            
-            try {
-                uvResponse = await fetch(uvUrl);
-                if (uvResponse.ok) {
-                    const uvData = await uvResponse.json();
-                    uvIndex = uvData.value || 0;
+            const uvResponse = await fetch(uvUrl);
+            if (uvResponse.ok) {
+                const uvData = await uvResponse.json();
+                uvIndex = uvData.value || 0;
+                originalUV = uvIndex;
+                
+                // Koreksi untuk Southeast Asia
+                if (this.isInSoutheastAsia(lat, lon)) {
+                    console.log(`🌏 Southeast Asia detected: ${weatherData.name || name}`);
+                    
+                    let correctionFactor = 0.70;
+                    
+                    if (this.isInIndonesia(lat, lon)) {
+                        correctionFactor = 0.65;
+                        console.log(`🇮🇩 Indonesia correction applied`);
+                    } else if (this.isInSingapore(lat, lon)) {
+                        correctionFactor = 0.75;
+                        console.log(`🇸🇬 Singapore correction applied`);
+                    } else if (this.isInMalaysia(lat, lon)) {
+                        correctionFactor = 0.75;
+                        console.log(`🇲🇾 Malaysia correction applied`);
+                    }
+                    
+                    uvIndex = uvIndex * correctionFactor;
+                    const MAX_SEA_UV = 11;
+                    uvIndex = Math.min(uvIndex, MAX_SEA_UV);
+                    
+                    console.log(`📊 UV corrected: ${originalUV.toFixed(1)} → ${uvIndex.toFixed(1)}`);
+                    this.logUVCorrection(originalUV, uvIndex, lat, lon, weatherData.name || name);
                 }
-            } catch (uvError) {
-                console.warn("UV API error:", uvError);
+                
+                uvIndex = Math.min(uvIndex, 12);
             }
-            
-            // Parse times
-            const sunrise = new Date(weatherData.sys.sunrise * 1000);
-            const sunset = new Date(weatherData.sys.sunset * 1000);
-            const now = new Date();
-            
-            // PERBAIKAN BESAR: UV harus 0 di malam hari
-            if (now < sunrise || now > sunset) {
-                uvIndex = 0; // Malam hari, UV = 0
-                console.log("🌙 Nighttime detected, setting UV to 0");
-            }
-            
-            return {
-                uvIndex: parseFloat(uvIndex.toFixed(1)),
-                temperature: parseFloat(weatherData.main.temp.toFixed(1)),
-                feelsLike: parseFloat(weatherData.main.feels_like.toFixed(1)),
-                humidity: weatherData.main.humidity,
-                pressure: weatherData.main.pressure,
-                weather: weatherData.weather[0].description,
-                weatherMain: weatherData.weather[0].main,
-                weatherIcon: weatherData.weather[0].icon,
-                windSpeed: parseFloat(weatherData.wind.speed.toFixed(1)),
-                windDeg: weatherData.wind.deg || 0,
-                clouds: weatherData.clouds.all,
-                sunrise: sunrise,
-                sunset: sunset,
-                cityName: weatherData.name || name,
-                country: weatherData.sys.country || "XX",
-                timestamp: new Date(),
-                lat: lat,
-                lon: lon,
-                source: "api",
-                apiSource: "OpenWeatherMap",
-                isDaytime: now >= sunrise && now <= sunset
-            };
-            
-        } catch (error) {
-            console.error("❌ API fetch error:", error);
-            this.API_CONFIG.currentKeyIndex = (this.API_CONFIG.currentKeyIndex + 1) % apiKeys.length;
-            return null;
+        } catch (uvError) {
+            console.warn("❌ OpenWeatherMap UV API error:", uvError);
         }
+        
+        // ========== PERBAIKAN KRITIS: SUNRISE/SUNSET ==========
+        // Data dari OpenWeatherMap SUDAH dalam waktu lokal kota tersebut!
+        // JANGAN tambah atau kurangi jam!
+        
+        const sunriseUnix = weatherData.sys.sunrise; // LOCAL TIME timestamp
+        const sunsetUnix = weatherData.sys.sunset;   // LOCAL TIME timestamp
+        
+        // Konversi ke Date object - INI SUDAH WAKTU LOKAL
+        const sunriseLocal = new Date(sunriseUnix * 1000);
+        const sunsetLocal = new Date(sunsetUnix * 1000);
+        
+        // Waktu sekarang
+        const now = new Date();
+        
+        // ========== DEBUG DETAILED ==========
+        console.log("=".repeat(50));
+        console.log("🕐 SUNRISE/SUNSET DEBUG untuk:", weatherData.name || name);
+        console.log("=".repeat(50));
+        console.log("📍 Koordinat:", lat + ", " + lon);
+        console.log("📅 Tanggal sekarang:", now.toLocaleDateString('id-ID'));
+        console.log("⏰ Waktu sekarang:", now.toLocaleTimeString('id-ID'));
+        console.log("");
+        console.log("📊 DATA DARI API:");
+        console.log("  Sunrise Unix:", sunriseUnix);
+        console.log("  Sunset Unix:", sunsetUnix);
+        console.log("  Sunrise (Date):", sunriseLocal.toString());
+        console.log("  Sunset (Date):", sunsetLocal.toString());
+        console.log("  Sunrise (Local):", sunriseLocal.toLocaleTimeString('id-ID'));
+        console.log("  Sunset (Local):", sunsetLocal.toLocaleTimeString('id-ID'));
+        console.log("  Sunrise (ISO):", sunriseLocal.toISOString());
+        console.log("  Sunset (ISO):", sunsetLocal.toISOString());
+        console.log("");
+        
+        // Cek apakah masuk akal untuk lokasi Indonesia
+        const sunriseHour = sunriseLocal.getHours();
+        const sunsetHour = sunsetLocal.getHours();
+        
+        console.log("✅ Sunrise Hour:", sunriseHour + ":" + sunriseLocal.getMinutes().toString().padStart(2, '0'));
+        console.log("✅ Sunset Hour:", sunsetHour + ":" + sunsetLocal.getMinutes().toString().padStart(2, '0'));
+        
+        // Validasi: Untuk Indonesia, sunrise biasanya 5-7 pagi, sunset 17-19 sore
+        if (sunriseHour < 4 || sunriseHour > 8) {
+            console.warn("⚠️ WARNING: Sunrise time seems unrealistic for Indonesia!");
+        }
+        if (sunsetHour < 17 || sunsetHour > 20) {
+            console.warn("⚠️ WARNING: Sunset time seems unrealistic for Indonesia!");
+        }
+        
+        // Cek apakah sekarang siang atau malam
+        const isDaytime = now >= sunriseLocal && now <= sunsetLocal;
+        
+        console.log("");
+        console.log("🔆 DAY/NIGHT CHECK:");
+        console.log("  Now:", now.toLocaleTimeString('id-ID'));
+        console.log("  Sunrise:", sunriseLocal.toLocaleTimeString('id-ID'));
+        console.log("  Sunset:", sunsetLocal.toLocaleTimeString('id-ID'));
+        console.log("  Is Daytime?", isDaytime ? "☀️ YA (Siang)" : "🌙 TIDAK (Malam)");
+        console.log("=".repeat(50));
+        
+        // Jika malam hari, adjust UV index
+        if (!isDaytime) {
+            console.log("🌙 Nighttime detected, reducing UV index");
+            uvIndex = Math.max(0, uvIndex * 0.1); // UV sangat rendah di malam hari
+        }
+        
+        return {
+            uvIndex: parseFloat(uvIndex.toFixed(1)),
+            temperature: parseFloat(weatherData.main.temp.toFixed(1)),
+            feelsLike: parseFloat(weatherData.main.feels_like.toFixed(1)),
+            humidity: weatherData.main.humidity,
+            pressure: weatherData.main.pressure,
+            weather: weatherData.weather[0].description,
+            weatherMain: weatherData.weather[0].main,
+            weatherIcon: weatherData.weather[0].icon,
+            windSpeed: parseFloat(weatherData.wind.speed.toFixed(1)),
+            windDeg: weatherData.wind.deg || 0,
+            clouds: weatherData.clouds.all,
+            sunrise: sunriseLocal,  // INI SUDAH WAKTU LOKAL!
+            sunset: sunsetLocal,    // INI SUDAH WAKTU LOKAL!
+            cityName: weatherData.name || name,
+            country: weatherData.sys.country || "XX",
+            timestamp: now,
+            lat: lat,
+            lon: lon,
+            source: "api",
+            apiSource: "OpenWeatherMap",
+            provider: "OpenWeatherMap",
+            isDaytime: isDaytime,
+            originalUV: originalUV,
+            timezoneOffset: weatherData.timezone || 25200 // timezone offset dalam detik (7 jam = 25200 detik)
+        };
+        
+    } catch (error) {
+        console.error("❌ OpenWeatherMap fetch error:", error);
+        const apiConfig = this.MULTI_API_CONFIG.openweather;
+        apiConfig.currentKeyIndex = (apiConfig.currentKeyIndex + 1) % apiConfig.keys.length;
+        return null;
     }
+}
+
     
     async generateDemoData() {
         const { lat, lon, name, country } = this.currentLocation;
@@ -1488,73 +1838,258 @@ updateLocationInputs(name, lat, lon) {
     }
     
     updateWeatherInfo() {
-        if (!this.currentData) return;
+    if (!this.currentData) {
+        console.error("❌ ERROR: currentData is undefined!");
+        return;
+    }
+    
+    const data = this.currentData;
+    
+    // Debug log dulu
+    console.log("🔍 DEBUG updateWeatherInfo - Data structure:", {
+        hasData: !!data,
+        sunrise: data.sunrise,
+        sunset: data.sunset,
+        sunriseType: typeof data.sunrise,
+        isDateSunrise: data.sunrise instanceof Date,
+        sunriseToString: data.sunrise ? data.sunrise.toString() : 'null',
+        sunsetToString: data.sunset ? data.sunset.toString() : 'null',
+        timezoneOffset: data.timezoneOffset,
+        isDaytime: data.isDaytime
+    });
+
+    const updateElement = (id, value) => {
+        const element = document.getElementById(id);
+        if (element) {
+            element.textContent = value;
+        } else {
+            console.warn(`⚠️ Element with id "${id}" not found`);
+        }
+    };
+    
+    // Tampilkan kota dan negara
+    let locationText = data.cityName || 'Unknown City';
+    if (data.country && data.country !== "XX") {
+        locationText += `, ${data.country}`;
+    }
+    updateElement('locationName', locationText);
+    
+    const coordinatesElement = document.getElementById('coordinatesText');
+    if (coordinatesElement) {
+        const lat = data.lat !== undefined ? data.lat.toFixed(4) : '0.0000';
+        const lon = data.lon !== undefined ? data.lon.toFixed(4) : '0.0000';
+        coordinatesElement.textContent = `${lat}, ${lon}`;
+    }
+    
+    updateElement('temperature', data.temperature !== undefined ? `${data.temperature.toFixed(1)}°C` : '- °C');
+    updateElement('feelsLikeText', data.feelsLike !== undefined ? `${data.feelsLike.toFixed(1)}°C` : '- °C');
+    updateElement('weatherCondition', data.weather || 'Tidak diketahui');
+    
+    // Humidity
+    updateElement('humidity', `${data.humidity !== undefined ? data.humidity : '-'}%`);
+    
+    const pressureElement = document.getElementById('pressureText');
+    const windElement = document.getElementById('windText');
+    const cloudsElement = document.getElementById('cloudsText');
+    
+    // Pressure
+    if (pressureElement) {
+        pressureElement.textContent = `${data.pressure !== undefined ? data.pressure : '-'} hPa`;
+    }
+    
+    // Wind
+    if (windElement) {
+        windElement.textContent = data.windSpeed !== undefined ? `${data.windSpeed.toFixed(1)} m/s` : '- m/s';
+    }
+    
+    // Clouds
+    if (cloudsElement) {
+        cloudsElement.textContent = `${data.clouds !== undefined ? data.clouds : '-'}%`;
+    }
+    
+    // ========== PERBAIKAN UTAMA: SUNRISE & SUNSET DISPLAY ==========
+    if (data.sunrise && data.sunset) {
+        console.log("🌅 Processing sunrise/sunset data...");
         
-        const data = this.currentData;
-        
-        const updateElement = (id, value) => {
-            const element = document.getElementById(id);
-            if (element) {
-                element.textContent = value;
+        try {
+            // PERBAIKAN 1: Data sudah lokal, JANGAN tambah 7 jam lagi!
+            // Pastikan kita punya Date object
+            let sunriseDate, sunsetDate;
+            
+            if (data.sunrise instanceof Date) {
+                sunriseDate = data.sunrise;
+                sunsetDate = data.sunset;
+            } else if (typeof data.sunrise === 'number') {
+                // Jika number (Unix timestamp), konversi ke Date
+                sunriseDate = new Date(data.sunrise * 1000);
+                sunsetDate = new Date(data.sunset * 1000);
+            } else if (typeof data.sunrise === 'string') {
+                // Jika string, parse ke Date
+                sunriseDate = new Date(data.sunrise);
+                sunsetDate = new Date(data.sunset);
+            } else {
+                // Fallback
+                sunriseDate = new Date();
+                sunsetDate = new Date();
+                sunriseDate.setHours(6, 0, 0);
+                sunsetDate.setHours(18, 0, 0);
             }
-        };
-        
-        // Tampilkan kota dan negara
-        let locationText = data.cityName;
-        if (data.country && data.country !== "XX") {
-            locationText += `, ${data.country}`;
-        }
-        updateElement('locationName', locationText);
-        
-        const coordinatesElement = document.getElementById('coordinatesText');
-        if (coordinatesElement) {
-            coordinatesElement.textContent = `${data.lat.toFixed(4)}, ${data.lon.toFixed(4)}`;
-        }
-        
-        updateElement('temperature', `${data.temperature.toFixed(1)}°C`);
-        updateElement('feelsLikeText', `${data.feelsLike.toFixed(1)}°C`);
-        updateElement('weatherCondition', data.weather);
-        updateElement('humidity', `${data.humidity}%`);
-        
-        const pressureElement = document.getElementById('pressureText');
-        const windElement = document.getElementById('windText');
-        const cloudsElement = document.getElementById('cloudsText');
-        
-        if (pressureElement) pressureElement.textContent = `${data.pressure} hPa`;
-        if (windElement) windElement.textContent = `${data.windSpeed.toFixed(1)} m/s`;
-        if (cloudsElement) cloudsElement.textContent = `${data.clouds}%`;
-        
-        if (data.sunrise && data.sunset) {
-            try {
-                const sunriseTime = data.sunrise.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
-                const sunsetTime = data.sunset.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+            
+            // PERBAIKAN 2: Tampilkan waktu lokal TANPA timeZone parameter
+            // Karena data sudah lokal untuk kota tersebut
+            const sunriseTime = sunriseDate.toLocaleTimeString('id-ID', { 
+                hour: '2-digit', 
+                minute: '2-digit'
+            });
+            
+            const sunsetTime = sunsetDate.toLocaleTimeString('id-ID', { 
+                hour: '2-digit', 
+                minute: '2-digit'
+            });
+            
+            console.log(`🕐 Display times for ${data.cityName}:`);
+            console.log(`  Sunrise Date: ${sunriseDate.toString()}`);
+            console.log(`  Sunset Date: ${sunsetDate.toString()}`);
+            console.log(`  Sunrise Local: ${sunriseTime}`);
+            console.log(`  Sunset Local: ${sunsetTime}`);
+            console.log(`  Sunrise ISO: ${sunriseDate.toISOString()}`);
+            console.log(`  Sunset ISO: ${sunsetDate.toISOString()}`);
+            
+            // Update UI
+            updateElement('sunriseText', sunriseTime);
+            updateElement('sunsetText', sunsetTime);
+            
+            // PERBAIKAN 3: Update status waktu (siang/malam)
+            const now = new Date();
+            const timeStatus = document.getElementById('timeStatus');
+            
+            // Gunakan isDaytime dari data jika ada, jika tidak hitung
+            let isDaytime;
+            if (data.isDaytime !== undefined) {
+                isDaytime = data.isDaytime;
+                console.log(`🔆 Using API isDaytime: ${isDaytime}`);
+            } else {
+                // Hitung manual: bandingkan waktu sekarang dengan sunrise/sunset
+                const currentHour = now.getHours();
+                const currentMinutes = now.getHours() * 60 + now.getMinutes();
+                const sunriseHour = sunriseDate.getHours();
+                const sunriseMinutes = sunriseDate.getHours() * 60 + sunriseDate.getMinutes();
+                const sunsetHour = sunsetDate.getHours();
+                const sunsetMinutes = sunsetDate.getHours() * 60 + sunsetDate.getMinutes();
                 
-                updateElement('sunriseText', sunriseTime);
-                updateElement('sunsetText', sunsetTime);
-                
-                // Tampilkan status siang/malam
-                const now = new Date();
-                const isDaytime = now >= data.sunrise && now <= data.sunset;
-                const timeStatus = document.getElementById('timeStatus');
-                if (timeStatus) {
-                    timeStatus.textContent = isDaytime ? '☀️ Siang Hari' : '🌙 Malam Hari';
-                    timeStatus.style.color = isDaytime ? '#FF8C00' : '#4169E1';
+                isDaytime = currentMinutes >= sunriseMinutes && currentMinutes <= sunsetMinutes;
+                console.log(`🔆 Calculated isDaytime: ${isDaytime} (Now: ${currentHour}:${now.getMinutes()}, Sunrise: ${sunriseHour}:${sunriseDate.getMinutes()}, Sunset: ${sunsetHour}:${sunsetDate.getMinutes()})`);
+            }
+            
+            if (timeStatus) {
+                if (isDaytime) {
+                    timeStatus.innerHTML = '☀️ Siang Hari';
+                    timeStatus.style.color = '#FF8C00';
+                    timeStatus.title = `UV aktif - perlindungan diperlukan`;
+                } else {
+                    timeStatus.innerHTML = '🌙 Malam Hari';
+                    timeStatus.style.color = '#4169E1';
+                    timeStatus.title = `UV tidak aktif - tidak perlu sunscreen`;
                 }
+            }
+            
+            // PERBAIKAN 4: Update timezone info berdasarkan lokasi
+            const timezoneInfo = document.getElementById('timezoneInfo');
+            if (timezoneInfo) {
+                if (data.country === "ID") {
+                    // Untuk Indonesia, tentukan zona waktu berdasarkan longitude
+                    if (data.lon > 114) {
+                        timezoneInfo.textContent = "WITA (UTC+8)";
+                        timezoneInfo.title = "Waktu Indonesia Tengah";
+                    } else if (data.lon > 129) {
+                        timezoneInfo.textContent = "WIT (UTC+9)";
+                        timezoneInfo.title = "Waktu Indonesia Timur";
+                    } else {
+                        timezoneInfo.textContent = "WIB (UTC+7)";
+                        timezoneInfo.title = "Waktu Indonesia Barat";
+                    }
+                } else if (data.timezoneOffset) {
+                    // Untuk negara lain, hitung dari offset
+                    const offsetHours = data.timezoneOffset / 3600;
+                    const sign = offsetHours >= 0 ? '+' : '';
+                    timezoneInfo.textContent = `UTC${sign}${offsetHours}`;
+                    timezoneInfo.title = `Local timezone (${offsetHours} hours from UTC)`;
+                } else {
+                    timezoneInfo.textContent = "Local Time";
+                    timezoneInfo.title = "Waktu lokal kota tersebut";
+                }
+            }
+            
+            // PERBAIKAN 5: Update day/night indicator berdasarkan waktu lokal
+            const dayNightElement = document.getElementById('dayNightIndicator');
+            if (dayNightElement) {
+                const hour = now.getHours();
+                if (hour >= 5 && hour < 10) {
+                    dayNightElement.innerHTML = '🌅 Pagi';
+                    dayNightElement.style.color = '#FFA500';
+                    dayNightElement.title = `Pagi hari (${hour}:${now.getMinutes().toString().padStart(2, '0')})`;
+                } else if (hour >= 10 && hour < 15) {
+                    dayNightElement.innerHTML = '☀️ Siang';
+                    dayNightElement.style.color = '#FF4500';
+                    dayNightElement.title = `Siang hari - UV tinggi (${hour}:${now.getMinutes().toString().padStart(2, '0')})`;
+                } else if (hour >= 15 && hour < 18) {
+                    dayNightElement.innerHTML = '🌇 Sore';
+                    dayNightElement.style.color = '#FF8C00';
+                    dayNightElement.title = `Sore hari (${hour}:${now.getMinutes().toString().padStart(2, '0')})`;
+                } else if (hour >= 18 && hour < 24) {
+                    dayNightElement.innerHTML = '🌙 Malam';
+                    dayNightElement.style.color = '#4169E1';
+                    dayNightElement.title = `Malam hari (${hour}:${now.getMinutes().toString().padStart(2, '0')})`;
+                } else {
+                    dayNightElement.innerHTML = '🌌 Dini Hari';
+                    dayNightElement.style.color = '#6A5ACD';
+                    dayNightElement.title = `Dini hari (${hour}:${now.getMinutes().toString().padStart(2, '0')})`;
+                }
+            }
                 
-            } catch (error) {
-                console.error("Error formatting time:", error);
-                updateElement('sunriseText', '06:00');
-                updateElement('sunsetText', '18:00');
+        } catch (error) {
+            console.error("❌ Error processing sunrise/sunset:", error);
+            console.error("Sunrise raw value:", data.sunrise);
+            console.error("Sunset raw value:", data.sunset);
+            
+            // Fallback values yang realistis untuk Indonesia
+            updateElement('sunriseText', '06:00');
+            updateElement('sunsetText', '18:00');
+            
+            const timeStatus = document.getElementById('timeStatus');
+            if (timeStatus) {
+                timeStatus.textContent = '⏱️ Waktu Tidak Diketahui';
+                timeStatus.style.color = '#888';
             }
         }
-        
-        if (this.lastUpdateTime) {
-            const lastUpdateElement = document.getElementById('lastUpdate');
-            if (lastUpdateElement) {
-                lastUpdateElement.textContent = this.lastUpdateTime.toLocaleTimeString('id-ID');
-            }
+    } else {
+        console.warn("⚠️ Sunrise/sunset data missing!");
+        updateElement('sunriseText', '--:--');
+        updateElement('sunsetText', '--:--');
+    }
+    
+    // Update last update time
+    if (this.lastUpdateTime) {
+        const lastUpdateElement = document.getElementById('lastUpdate');
+        if (lastUpdateElement) {
+            lastUpdateElement.textContent = this.lastUpdateTime.toLocaleTimeString('id-ID');
         }
     }
+    
+    // Update data source
+    const dataSourceElement = document.getElementById('dataSource');
+    if (dataSourceElement) {
+        if (data.apiSource === 'demo') {
+            dataSourceElement.textContent = 'Data Demo';
+            dataSourceElement.style.color = '#ff6600';
+        } else {
+            dataSourceElement.textContent = data.apiSource || 'API';
+            dataSourceElement.style.color = '#0066cc';
+        }
+    }
+    
+    console.log("✅ Weather info updated successfully");
+}
     
     updateRecommendations() {
         if (!this.currentData) return;
@@ -1973,40 +2508,31 @@ updateLocationInputs(name, lat, lon) {
     }
     
     calculateSunbathDuration() {
-        if (!this.currentData) return;
+    if (!this.currentData) return;
+    
+    const uvIndex = this.currentData.uvIndex;
+    const skinTypeSelect = document.getElementById('skinTypeSelect');
+    const spfSelect = document.getElementById('spfSelect');
+    const calcUV = document.getElementById('calcUV');
+    
+    if (!skinTypeSelect || !spfSelect) return;
+    
+    const skinType = skinTypeSelect.value;
+    const spf = parseInt(spfSelect.value) || 1;
+    const useCustomUV = calcUV ? parseFloat(calcUV.value) : uvIndex;
+    
+    // PERBAIKAN: Handle UV = 0 (malam hari)
+    if (!skinType || useCustomUV <= 0) {
+        this.updateSunbathResults('N/A', 'N/A', 'Tidak ada', 'Tidak ada UV');
         
-        const uvIndex = this.currentData.uvIndex;
-        const skinTypeSelect = document.getElementById('skinTypeSelect');
-        const spfSelect = document.getElementById('spfSelect');
-        const calcUV = document.getElementById('calcUV');
-        
-        if (!skinTypeSelect || !spfSelect) return;
-        
-        const skinType = skinTypeSelect.value;
-        const spf = parseInt(spfSelect.value) || 1;
-        const useCustomUV = calcUV ? parseFloat(calcUV.value) : uvIndex;
-        
-        if (!skinType || useCustomUV <= 0) {
-            // Jika UV = 0 (malam hari)
-            const updateElement = (id, value) => {
-                const element = document.getElementById(id);
-                if (element) {
-                    element.textContent = value;
-                }
-            };
-            
-            updateElement('safeSunbathTime', 'N/A');
-            updateElement('vitaminDTime', 'N/A');
-            updateElement('burnRisk', 'Tidak ada');
-            updateElement('sunbathDuration', `Tidak ada UV`);
-            
-            const burnRiskElement = document.getElementById('burnRisk');
-            if (burnRiskElement) {
-                burnRiskElement.style.color = '#00cc00';
-                burnRiskElement.style.fontWeight = 'bold';
-            }
-            return;
+        // Update juga elemen lain
+        const sunbathDurationElement = document.getElementById('sunbathDuration');
+        if (sunbathDurationElement) {
+            sunbathDurationElement.textContent = 'Tidak ada UV';
+            sunbathDurationElement.style.color = '#666';
         }
+        return;
+    }
         
         const medTimes = {
             'I': 10,
@@ -2060,81 +2586,107 @@ updateLocationInputs(name, lat, lon) {
     
     // ==================== CHART METHODS - PERBAIKAN UTAMA ====================
     updateCharts() {
-        console.log("📈 Updating charts...");
-        
-        // PERBAIKAN: Cek apakah element chart ada
+    console.log("📈 Updating charts...");
+    
+    // PERBAIKAN: Pastikan chart container ada
+    const chartContainer = document.querySelector('.chart-container');
+    if (!chartContainer) {
+        console.error("Chart container not found!");
+        return;
+    }
+    
+    // PERBAIKAN: Inisialisasi chart jika belum ada
+    if (!this.charts.uv) {
         const uvCtx = document.getElementById('uvChart');
         if (!uvCtx) {
-            console.error("Chart element not found!");
-            return;
-        }
-        
-        if (!this.charts.uv) {
-            console.log("Chart not initialized yet, initializing now...");
-            this.initCharts();
-            return;
-        }
-        
-        if (!this.dataHistory || this.dataHistory.length < 1) {
-            console.log("No data to update chart");
-            // Set placeholder data
-            this.charts.uv.data.labels = ['00:00', '06:00', '12:00', '18:00'];
-            this.charts.uv.data.datasets[0].data = [0, 0, 0, 0];
-            this.charts.uv.update();
-            return;
-        }
-        
-        try {
-            const recentData = this.dataHistory.slice(-10);
-            const labels = recentData.map((point) => {
-                try {
-                    const time = new Date(point.timestamp);
-                    return `${time.getHours().toString().padStart(2, '0')}:${time.getMinutes().toString().padStart(2, '0')}`;
-                } catch (e) {
-                    return '00:00';
-                }
-            });
+            console.error("Chart canvas not found!");
             
-            const data = recentData.map(point => point.uvIndex);
+            // Buat canvas jika tidak ada
+            const newCanvas = document.createElement('canvas');
+            newCanvas.id = 'uvChart';
+            newCanvas.style.width = '100%';
+            newCanvas.style.height = '400px';
+            chartContainer.appendChild(newCanvas);
             
-            console.log("Updating chart with", data.length, "data points:", data);
-            
-            // PERBAIKAN: Gunakan try-catch untuk update chart
-            try {
-                this.charts.uv.data.labels = labels;
-                this.charts.uv.data.datasets[0].data = data;
-                
-                if (data.length > 0) {
-                    const maxUV = Math.max(...data);
-                    this.charts.uv.options.scales.y.suggestedMax = Math.max(15, maxUV * 1.2);
-                }
-                
-                this.charts.uv.update('none');
-                console.log("✅ Chart updated successfully");
-                
-            } catch (chartError) {
-                console.error("Error updating chart data:", chartError);
-                // Coba reinitialize chart
-                setTimeout(() => {
-                    this.initCharts();
-                    setTimeout(() => this.updateCharts(), 500);
-                }, 1000);
-            }
-            
-            this.updateHistoryTable();
-            
-        } catch (error) {
-            console.error("❌ Error updating charts:", error);
-            try {
+            // Coba init lagi
+            setTimeout(() => {
                 this.initCharts();
-                if (this.dataHistory.length > 0) {
-                    setTimeout(() => this.updateCharts(), 100);
+                if (this.charts.uv) {
+                    this.updateCharts();
                 }
-            } catch (reinitError) {
-                console.error("Failed to reinitialize chart:", reinitError);
-            }
+            }, 500);
+            return;
+        }
+        
+        this.initCharts();
+        if (!this.charts.uv) {
+            console.error("Failed to initialize chart!");
+            return;
         }
     }
+    
+    if (!this.dataHistory || this.dataHistory.length < 1) {
+        console.log("No data to update chart");
+        // Set placeholder data
+        this.charts.uv.data.labels = ['00:00', '06:00', '12:00', '18:00'];
+        this.charts.uv.data.datasets[0].data = [0, 5, 10, 5];
+        this.charts.uv.update();
+        return;
+    }
+    
+    try {
+        // Gunakan data terakhir (maks 12 data)
+        const recentData = this.dataHistory.slice(-12);
+        const labels = recentData.map((point, index) => {
+            try {
+                const time = new Date(point.timestamp);
+                return `${time.getHours().toString().padStart(2, '0')}:${time.getMinutes().toString().padStart(2, '0')}`;
+            } catch (e) {
+                return `${index * 2}:00`;
+            }
+        });
+        
+        const data = recentData.map(point => point.uvIndex);
+        
+        console.log(`📊 Chart data: ${data.length} points, latest UV: ${data[data.length-1]}`);
+        
+        // PERBAIKAN: Update chart dengan error handling
+        this.charts.uv.data.labels = labels;
+        this.charts.uv.data.datasets[0].data = data;
+        
+        // Update y-axis max
+        if (data.length > 0) {
+            const maxUV = Math.max(...data.filter(d => !isNaN(d)));
+            if (maxUV > 0) {
+                this.charts.uv.options.scales.y.suggestedMax = Math.max(15, maxUV * 1.3);
+            }
+        }
+        
+        // Update chart dengan animasi
+        this.charts.uv.update('active');
+        console.log("✅ Chart updated successfully");
+        
+        // Update history table juga
+        this.updateHistoryTable();
+        
+    } catch (error) {
+        console.error("❌ Error updating charts:", error);
+        
+        // Fallback: Tampilkan data sederhana
+        try {
+            const simpleData = [0, 3, 6, 9, 7, 4, 2];
+            const simpleLabels = ['06:00', '08:00', '10:00', '12:00', '14:00', '16:00', '18:00'];
+            
+            if (this.charts.uv) {
+                this.charts.uv.data.labels = simpleLabels;
+                this.charts.uv.data.datasets[0].data = simpleData;
+                this.charts.uv.update();
+            }
+        } catch (fallbackError) {
+            console.error("Even fallback failed:", fallbackError);
+        }
+    }
+}
     
     updateChartRange(hours) {
         if (!this.charts.uv || !this.dataHistory.length) return;
@@ -2578,51 +3130,810 @@ updateLocationInputs(name, lat, lon) {
     
     // ==================== NOTIFICATION SYSTEM ====================
     showNotification(message, type = 'info') {
-        const container = document.getElementById('notificationSystem');
-        if (!container) {
-            console.warn("Notification container not found");
+    console.log(`📢 ${type.toUpperCase()}: ${message}`);
+    
+    const container = document.getElementById('notificationSystem');
+    if (!container) {
+        console.warn("Notification container not found");
+        return;
+    }
+    
+    const notification = document.createElement('div');
+    notification.className = `notification ${type}`;
+    
+    // Icons
+    const icons = {
+        success: 'fa-check-circle',
+        error: 'fa-exclamation-circle',
+        warning: 'fa-exclamation-triangle',
+        info: 'fa-info-circle'
+    };
+    
+    const icon = icons[type] || 'fa-info-circle';
+    
+    notification.innerHTML = `
+        <i class="fas ${icon}"></i>
+        <div class="notification-content">
+            <div class="notification-title">${type.charAt(0).toUpperCase() + type.slice(1)}</div>
+            <div class="notification-message">${message}</div>
+        </div>
+        <button class="notification-close" onclick="this.parentElement.remove()">
+            <i class="fas fa-times"></i>
+        </button>
+    `;
+    
+    container.appendChild(notification);
+    
+    // Auto remove setelah 5 detik
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.classList.add('fade-out');
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.remove();
+                }
+            }, 300);
+        }
+    }, 5000);
+       
+        console.log(`📢 Notification: ${type} - ${message}`);
+    }
+
+        // ==================== METHOD BARU: WeatherAPI.com ====================
+    async fetchFromWeatherAPI(lat, lon) {
+        console.log("🌐 Mengambil data dari WeatherAPI.com...");
+        
+        // Cek config
+        if (!this.MULTI_API_CONFIG || !this.MULTI_API_CONFIG.weatherapi) {
+            console.error("WeatherAPI config not found!");
+            return null;
+        }
+        
+        const apiKey = this.MULTI_API_CONFIG.weatherapi.key;
+        const baseUrl = this.MULTI_API_CONFIG.weatherapi.baseUrl;
+        
+        if (!apiKey || apiKey === "YOUR_WEATHERAPI_KEY") {
+            console.error("WeatherAPI key tidak dikonfigurasi");
+            return null;
+        }
+        
+        const url = `${baseUrl}/current.json?key=${apiKey}&q=${lat},${lon}&aqi=no`;
+        console.log("URL WeatherAPI:", url);
+        
+        try {
+            const response = await fetch(url);
+            
+            if (!response.ok) {
+                console.warn(`WeatherAPI.com error: ${response.status}`);
+                return null;
+            }
+            
+            const data = await response.json();
+            const uvIndex = data.current?.uv || 0;
+            
+            console.log(`✅ WeatherAPI.com: UV = ${uvIndex}, Suhu = ${data.current.temp_c}°C`);
+            
+            return {
+                uvIndex: parseFloat(uvIndex.toFixed(1)),
+                temperature: data.current.temp_c,
+                feelsLike: data.current.feelslike_c,
+                humidity: data.current.humidity,
+                pressure: data.current.pressure_mb,
+                weather: data.current.condition.text,
+                weatherIcon: `https:${data.current.condition.icon}`,
+                windSpeed: data.current.wind_kph / 3.6,
+                windDeg: data.current.wind_degree,
+                clouds: data.current.cloud,
+                cityName: data.location?.name || "Unknown",
+                country: data.location?.country || "XX",
+                timestamp: new Date(data.current.last_updated),
+                lat: lat,
+                lon: lon,
+                source: "api",
+                apiSource: "WeatherAPI.com",
+                provider: "WeatherAPI.com"
+            };
+            
+        } catch (error) {
+            console.error("❌ WeatherAPI.com error:", error);
+            return null;
+        }
+    }
+
+        // ==================== METHOD BARU: Visual Crossing ====================
+    async fetchFromVisualCrossing(lat, lon) {
+        console.log("🌐 Mengambil data dari Visual Crossing...");
+        
+        // Cek config
+        if (!this.MULTI_API_CONFIG || !this.MULTI_API_CONFIG.visualcrossing) {
+            console.error("Visual Crossing config not found!");
+            return null;
+        }
+        
+        const apiKey = this.MULTI_API_CONFIG.visualcrossing.key;
+        const baseUrl = this.MULTI_API_CONFIG.visualcrossing.baseUrl;
+        
+        if (!apiKey || apiKey === "YOUR_VISUALCROSSING_KEY") {
+            console.error("Visual Crossing key tidak dikonfigurasi");
+            return null;
+        }
+        
+        const today = new Date().toISOString().split('T')[0];
+        const url = `${baseUrl}/${lat},${lon}/${today}?key=${apiKey}&unitGroup=metric&include=current`;
+        console.log("URL Visual Crossing:", url);
+        
+        try {
+            const response = await fetch(url);
+            
+            if (!response.ok) {
+                console.warn(`Visual Crossing error: ${response.status}`);
+                return null;
+            }
+            
+            const data = await response.json();
+            const current = data.currentConditions;
+            
+            if (!current) {
+                console.warn("Visual Crossing: No current data");
+                return null;
+            }
+            
+            const uvIndex = current.uvindex || 0;
+            
+            console.log(`✅ Visual Crossing: UV = ${uvIndex}, Suhu = ${current.temp}°C`);
+            
+            return {
+                uvIndex: parseFloat(uvIndex.toFixed(1)),
+                temperature: current.temp,
+                feelsLike: current.feelslike || current.temp,
+                humidity: current.humidity,
+                pressure: current.pressure,
+                weather: current.conditions || "Clear",
+                weatherIcon: this.getWeatherIcon(current.conditions || "Clear"),
+                windSpeed: current.windspeed,
+                windDeg: current.winddir,
+                clouds: current.cloudcover || 0,
+                cityName: data.resolvedAddress || "Unknown",
+                country: "XX",
+                timestamp: new Date(),
+                lat: lat,
+                lon: lon,
+                source: "api",
+                apiSource: "VisualCrossing",
+                provider: "Visual Crossing"
+            };
+            
+        } catch (error) {
+            console.error("❌ Visual Crossing error:", error);
+            return null;
+        }
+    }
+    
+    // Helper untuk icon weather
+    getWeatherIcon(conditions) {
+        const cond = conditions.toLowerCase();
+        if (cond.includes("clear") || cond.includes("sunny")) return "☀️";
+        if (cond.includes("cloud")) return "☁️";
+        if (cond.includes("rain")) return "🌧️";
+        if (cond.includes("storm")) return "⛈️";
+        return "☀️";
+    }
+
+        // ==================== METHOD BARU: Multi-Source System ====================
+    async fetchFromMultipleSources() {
+    console.log("🔄 Starting multi-source fetch...");
+    
+    if (!this.currentLocation) {
+        console.error("❌ No location for multi-source");
+        return null;
+    }
+    
+    const lat = this.currentLocation.lat;
+    const lon = this.currentLocation.lon;
+    const locationName = this.currentLocation.name || `(${lat}, ${lon})`;
+    
+    console.log(`🎯 Multi-source target: ${locationName}`);
+    
+    const results = [];
+    const errors = [];
+    
+    // 1. OpenWeatherMap (Prioritas 1)
+    console.log("1. 📡 OpenWeatherMap...");
+    try {
+        const owmData = await this.fetchWithTimeout(
+            () => this.fetchAPIData(),
+            8000,
+            "OpenWeatherMap"
+        );
+        if (owmData) {
+            results.push(owmData);
+            console.log(`   ✅ Success: UV ${owmData.uvIndex}`);
+        }
+    } catch (error) {
+        errors.push(`OpenWeatherMap: ${error.message}`);
+        console.warn("   ⚠️ Error:", error.message);
+    }
+    
+    // 2. WeatherAPI.com (Prioritas 2)
+    console.log("2. 📡 WeatherAPI.com...");
+    try {
+        const weatherApiData = await this.fetchWithTimeout(
+            () => this.fetchFromWeatherAPI(lat, lon),
+            8000,
+            "WeatherAPI.com"
+        );
+        if (weatherApiData) {
+            results.push(weatherApiData);
+            console.log(`   ✅ Success: UV ${weatherApiData.uvIndex}`);
+        }
+    } catch (error) {
+        errors.push(`WeatherAPI.com: ${error.message}`);
+        console.warn("   ⚠️ Error:", error.message);
+    }
+    
+    // 3. Visual Crossing (Prioritas 3)
+    console.log("3. 📡 Visual Crossing...");
+    try {
+        const vcData = await this.fetchWithTimeout(
+            () => this.fetchFromVisualCrossing(lat, lon),
+            8000,
+            "Visual Crossing"
+        );
+        if (vcData) {
+            results.push(vcData);
+            console.log(`   ✅ Success: UV ${vcData.uvIndex}`);
+        }
+    } catch (error) {
+        errors.push(`Visual Crossing: ${error.message}`);
+        console.warn("   ⚠️ Error:", error.message);
+    }
+    
+    console.log(`📊 Multi-source results: ${results.length}/3 successful`);
+    console.log(`❌ Errors: ${errors.length > 0 ? errors.join(', ') : 'None'}`);
+    
+    if (results.length === 0) {
+        console.log("❌ All sources failed");
+        return null;
+    }
+    
+    // Pilih data terbaik
+    const bestData = this.selectBestData(results, lat, lon);
+    console.log(`🏆 Selected: ${bestData.provider || bestData.apiSource} with UV ${bestData.uvIndex}`);
+    
+    return bestData;
+}
+
+// Helper method untuk timeout
+async fetchWithTimeout(fetchFunction, timeout = 8000, sourceName = "Unknown") {
+    return new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+            reject(new Error(`${sourceName} timeout after ${timeout}ms`));
+        }, timeout);
+        
+        fetchFunction()
+            .then(result => {
+                clearTimeout(timeoutId);
+                resolve(result);
+            })
+            .catch(error => {
+                clearTimeout(timeoutId);
+                reject(error);
+            });
+    });
+}
+
+    // Method untuk memilih data terbaik
+    selectBestData(dataArray, lat, lon) {
+    console.log(`🎯 Selecting best from ${dataArray.length} sources`);
+    
+    if (dataArray.length === 0) return null;
+    if (dataArray.length === 1) return dataArray[0];
+    
+    // Tampilkan semua data
+    dataArray.forEach((data, i) => {
+        console.log(`   ${i+1}. ${data.provider || data.apiSource}: UV ${data.uvIndex}, Temp ${data.temperature}°C`);
+    });
+    
+    // ========== LOGIKA PEMILIHAN SEDERHANA ==========
+    
+    // 1. Prioritas berdasarkan provider
+    const priorityOrder = ["WeatherAPI.com", "OpenWeatherMap", "Visual Crossing"];
+    
+    for (const provider of priorityOrder) {
+        const found = dataArray.find(d => 
+            d.provider === provider || d.apiSource === provider
+        );
+        if (found) {
+            console.log(`✅ Selected by priority: ${provider}`);
+            return found;
+        }
+    }
+    
+    // 2. Jika tidak match, ambil dengan UV paling realistis
+    // (hindari UV terlalu tinggi/tidak realistis)
+    const realisticData = dataArray.filter(d => d.uvIndex >= 0 && d.uvIndex <= 15);
+    if (realisticData.length > 0) {
+        // Ambil yang pertama (bisa juga yang UV rata-rata)
+        console.log("✅ Selected: Most realistic UV");
+        return realisticData[0];
+    }
+    
+    // 3. Fallback: data pertama
+    console.log("✅ Selected: First available");
+    return dataArray[0];
+}
+
+validateCoordinates(lat, lon) {
+    console.log(`📍 Validating coordinates: ${lat}, ${lon}`);
+    
+    if (lat === undefined || lon === undefined || 
+        lat === null || lon === null) {
+        throw new Error("Koordinat tidak boleh kosong");
+    }
+    
+    if (isNaN(lat) || isNaN(lon)) {
+        throw new Error("Koordinat harus berupa angka");
+    }
+    
+    if (lat < -90 || lat > 90) {
+        throw new Error("Latitude harus antara -90 dan 90");
+    }
+    
+    if (lon < -180 || lon > 180) {
+        throw new Error("Longitude harus antara -180 dan 180");
+    }
+    
+    console.log("✅ Coordinates valid");
+    return true;
+}
+
+validateCityName(cityName) {
+    if (!cityName || cityName.trim().length === 0) {
+        throw new Error("Nama kota tidak boleh kosong");
+    }
+    
+    if (cityName.length > 100) {
+        throw new Error("Nama kota terlalu panjang (max 100 karakter)");
+    }
+    
+    // Basic validation untuk mencegah input berbahaya
+    if (/[<>{}[\]]/.test(cityName)) {
+        throw new Error("Nama kota mengandung karakter tidak valid");
+    }
+    
+    return true;
+}
+
+validateUVIndex(uv) {
+    if (uv === undefined || uv === null) {
+        throw new Error("UV Index tidak valid");
+    }
+    
+    if (isNaN(uv)) {
+        throw new Error("UV Index harus berupa angka");
+    }
+    
+    if (uv < 0 || uv > 20) {
+        throw new Error("UV Index harus antara 0 dan 20");
+    }
+    
+    return true;
+}
+
+    createSimpleChartFallback() {
+        console.log("📊 Creating simple chart fallback...");
+        
+        const chartContainer = document.querySelector('.chart-container');
+        if (!chartContainer) {
+            console.warn("📊 Chart container not found");
             return;
         }
         
-        const notification = document.createElement('div');
-        notification.className = `notification ${type}`;
+        // Hapus canvas jika ada
+        const canvas = document.getElementById('uvChart');
+        if (canvas) {
+            canvas.style.display = 'none';
+        }
         
-        const icons = {
-            success: 'fa-check-circle',
-            error: 'fa-times-circle',
-            warning: 'fa-exclamation-triangle',
-            info: 'fa-info-circle'
-        };
+        if (!this.dataHistory || this.dataHistory.length === 0) {
+            chartContainer.innerHTML = `
+                <div class="simple-chart no-data">
+                    <div class="chart-icon">
+                        <i class="fas fa-chart-line"></i>
+                    </div>
+                    <h4>UV Index Chart</h4>
+                    <p>Ambil data terlebih dahulu untuk melihat grafik</p>
+                    <button class="btn btn-primary" onclick="app.fetchData()">
+                        <i class="fas fa-cloud-download-alt"></i> Ambil Data UV
+                    </button>
+                </div>
+            `;
+            return;
+        }
         
-        const icon = icons[type] || 'fa-info-circle';
+        // Ambil 10 data terakhir
+        const recentData = this.dataHistory.slice(-10);
+        const maxUV = Math.max(...recentData.map(d => d.uvIndex), 1);
         
-        notification.innerHTML = `
-            <i class="fas ${icon}"></i>
-            <div class="notification-content">
-                <div class="notification-title">${type.charAt(0).toUpperCase() + type.slice(1)}</div>
-                <div class="notification-message">${message}</div>
+        // Buat HTML untuk chart bars
+        let barsHTML = '';
+        recentData.forEach((data, index) => {
+            const height = (data.uvIndex / maxUV) * 120; // Max height 120px
+            const uvLevel = this.getUVLevel(data.uvIndex);
+            const time = new Date(data.timestamp).toLocaleTimeString('id-ID', {
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            
+            barsHTML += `
+                <div class="simple-bar" style="width: ${80 / recentData.length}%">
+                    <div class="bar-value" 
+                         style="height: ${height}px; 
+                                background: ${uvLevel.color};
+                                box-shadow: 0 2px 8px ${uvLevel.color}80;"
+                         title="UV: ${data.uvIndex.toFixed(1)} at ${time}">
+                        <span class="bar-label">${data.uvIndex.toFixed(1)}</span>
+                    </div>
+                    <div class="time-label">${time}</div>
+                </div>
+            `;
+        });
+        
+        chartContainer.innerHTML = `
+            <div class="simple-chart">
+                <div class="chart-header">
+                    <h4><i class="fas fa-chart-line"></i> UV Index (Simple View)</h4>
+                    <small>Chart.js tidak tersedia, menggunakan tampilan alternatif</small>
+                </div>
+                <div class="chart-bars">
+                    ${barsHTML}
+                </div>
+                <div class="chart-footer">
+                    <button class="btn btn-small" onclick="app.initCharts()">
+                        <i class="fas fa-redo"></i> Coba Chart.js Lagi
+                    </button>
+                </div>
             </div>
-            <button class="notification-close" onclick="this.parentElement.remove()">
-                <i class="fas fa-times"></i>
-            </button>
         `;
         
-        container.appendChild(notification);
-        
-        setTimeout(() => {
-            if (notification.parentNode === container) {
-                notification.style.opacity = '0';
-                notification.style.transform = 'translateX(100%)';
-                setTimeout(() => {
-                    if (notification.parentNode === container) {
-                        notification.remove();
-                    }
-                }, 300);
-            }
-        }, 5000);
-        
-        console.log(`📢 Notification: ${type} - ${message}`);
+        // Tambahkan style inline jika belum ada
+        this.addSimpleChartStyles();
     }
+    
+    addSimpleChartStyles() {
+        // Cek apakah style sudah ada
+        if (document.getElementById('simple-chart-styles')) return;
+        
+        const style = document.createElement('style');
+        style.id = 'simple-chart-styles';
+        style.textContent = `
+            .simple-chart {
+                background: white;
+                border-radius: 12px;
+                padding: 20px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+                margin: 20px 0;
+                border: 1px solid #e2e8f0;
+            }
+            
+            .simple-chart.no-data {
+                text-align: center;
+                padding: 40px 20px;
+            }
+            
+            .simple-chart.no-data .chart-icon {
+                font-size: 3rem;
+                color: #cbd5e1;
+                margin-bottom: 15px;
+            }
+            
+            .simple-chart.no-data h4 {
+                color: #475569;
+                margin: 10px 0;
+            }
+            
+            .simple-chart.no-data p {
+                color: #64748b;
+                margin-bottom: 20px;
+            }
+            
+            .chart-header {
+                margin-bottom: 20px;
+            }
+            
+            .chart-header h4 {
+                margin: 0 0 5px 0;
+                color: #1e293b;
+                font-size: 1.1rem;
+            }
+            
+            .chart-header small {
+                color: #64748b;
+                font-size: 0.85rem;
+            }
+            
+            .chart-bars {
+                display: flex;
+                align-items: flex-end;
+                height: 150px;
+                padding: 20px 10px;
+                border-bottom: 2px solid #e2e8f0;
+                gap: 8px;
+            }
+            
+            .simple-bar {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                height: 100%;
+                flex: 1;
+            }
+            
+            .bar-value {
+                width: 80%;
+                min-height: 5px;
+                border-radius: 6px 6px 0 0;
+                position: relative;
+                transition: height 0.5s ease;
+                display: flex;
+                align-items: flex-end;
+                justify-content: center;
+            }
+            
+            .bar-value .bar-label {
+                position: absolute;
+                top: -25px;
+                font-size: 0.8rem;
+                font-weight: bold;
+                color: #334155;
+                background: white;
+                padding: 2px 6px;
+                border-radius: 4px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }
+            
+            .time-label {
+                margin-top: 10px;
+                font-size: 0.75rem;
+                color: #64748b;
+                text-align: center;
+                white-space: nowrap;
+            }
+            
+            .chart-footer {
+                margin-top: 15px;
+                text-align: center;
+            }
+            
+            .btn {
+                padding: 8px 16px;
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 0.9rem;
+                transition: all 0.2s;
+            }
+            
+            .btn-primary {
+                background: #0066cc;
+                color: white;
+            }
+            
+            .btn-primary:hover {
+                background: #0052a3;
+            }
+            
+            .btn-small {
+                padding: 6px 12px;
+                font-size: 0.8rem;
+                background: #f1f5f9;
+                color: #475569;
+            }
+            
+            .btn-small:hover {
+                background: #e2e8f0;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    // WeatherAPI.com fetcher
+async fetchFromWeatherAPI(lat, lon) {
+    console.log("🌐 Mengambil data dari WeatherAPI.com...");
+    
+    const apiKey = this.MULTI_API_CONFIG.weatherapi.key;
+    const baseUrl = this.MULTI_API_CONFIG.weatherapi.baseUrl;
+    
+    if (!apiKey || apiKey === "YOUR_WEATHERAPI_KEY") {
+        console.error("WeatherAPI key tidak dikonfigurasi");
+        return null;
+    }
+    
+    const url = `${baseUrl}/current.json?key=${apiKey}&q=${lat},${lon}&aqi=no`;
+    
+    try {
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            console.warn(`WeatherAPI.com error: ${response.status}`);
+            return null;
+        }
+        
+        const data = await response.json();
+        const uvIndex = data.current?.uv || 0;
+        
+        console.log(`✅ WeatherAPI.com: UV = ${uvIndex}, Suhu = ${data.current.temp_c}°C`);
+        
+        // Handle sunrise/sunset
+        const sunriseUTC = new Date(data.current.last_updated);
+        const sunsetUTC = new Date(data.current.last_updated);
+        sunriseUTC.setHours(6, 0, 0); // Default sunrise 6:00
+        sunsetUTC.setHours(18, 0, 0); // Default sunset 18:00
+        
+        // Konversi ke WIB
+        const sunriseWIB = new Date(sunriseUTC.getTime() + (7 * 60 * 60 * 1000));
+        const sunsetWIB = new Date(sunsetUTC.getTime() + (7 * 60 * 60 * 1000));
+        
+        return {
+            uvIndex: parseFloat(uvIndex.toFixed(1)),
+            temperature: data.current.temp_c,
+            feelsLike: data.current.feelslike_c,
+            humidity: data.current.humidity,
+            pressure: data.current.pressure_mb,
+            weather: data.current.condition.text,
+            weatherIcon: `https:${data.current.condition.icon}`,
+            windSpeed: data.current.wind_kph / 3.6, // Convert km/h to m/s
+            windDeg: data.current.wind_degree,
+            clouds: data.current.cloud,
+            sunrise: sunriseWIB,
+            sunset: sunsetWIB,
+            cityName: data.location?.name || "Unknown",
+            country: data.location?.country || "XX",
+            timestamp: new Date(data.current.last_updated),
+            lat: lat,
+            lon: lon,
+            source: "api",
+            apiSource: "WeatherAPI.com",
+            provider: "WeatherAPI.com"
+        };
+        
+    } catch (error) {
+        console.error("❌ WeatherAPI.com error:", error);
+        return null;
+    }
+}
+
+// Visual Crossing fetcher
+async fetchFromVisualCrossing(lat, lon) {
+    console.log("🌐 Mengambil data dari Visual Crossing...");
+    
+    const apiKey = this.MULTI_API_CONFIG.visualcrossing.key;
+    const baseUrl = this.MULTI_API_CONFIG.visualcrossing.baseUrl;
+    
+    if (!apiKey || apiKey === "YOUR_VISUALCROSSING_KEY") {
+        console.error("Visual Crossing key tidak dikonfigurasi");
+        return null;
+    }
+    
+    const today = new Date().toISOString().split('T')[0];
+    const url = `${baseUrl}/${lat},${lon}/${today}?key=${apiKey}&unitGroup=metric&include=current`;
+    
+    try {
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            console.warn(`Visual Crossing error: ${response.status}`);
+            return null;
+        }
+        
+        const data = await response.json();
+        const current = data.currentConditions;
+        
+        if (!current) {
+            console.warn("Visual Crossing: No current data");
+            return null;
+        }
+        
+        const uvIndex = current.uvindex || 0;
+        
+        console.log(`✅ Visual Crossing: UV = ${uvIndex}, Suhu = ${current.temp}°C`);
+        
+        // Handle sunrise/sunset
+        const sunriseUTC = new Date(data.days[0]?.sunrise || `${today}T06:00:00`);
+        const sunsetUTC = new Date(data.days[0]?.sunset || `${today}T18:00:00`);
+        
+        // Konversi ke WIB
+        const sunriseWIB = new Date(sunriseUTC.getTime() + (7 * 60 * 60 * 1000));
+        const sunsetWIB = new Date(sunsetUTC.getTime() + (7 * 60 * 60 * 1000));
+        
+        return {
+            uvIndex: parseFloat(uvIndex.toFixed(1)),
+            temperature: current.temp,
+            feelsLike: current.feelslike || current.temp,
+            humidity: current.humidity,
+            pressure: current.pressure,
+            weather: current.conditions || "Clear",
+            weatherIcon: this.getWeatherIcon(current.conditions || "Clear"),
+            windSpeed: current.windspeed,
+            windDeg: current.winddir,
+            clouds: current.cloudcover || 0,
+            cityName: data.resolvedAddress || "Unknown",
+            country: "XX",
+            timestamp: new Date(),
+            lat: lat,
+            lon: lon,
+            source: "api",
+            apiSource: "VisualCrossing",
+            provider: "Visual Crossing"
+        };
+        
+    } catch (error) {
+        console.error("❌ Visual Crossing error:", error);
+        return null;
+    }
+}
+
+// Helper untuk icon weather
+getWeatherIcon(conditions) {
+    const cond = conditions.toLowerCase();
+    if (cond.includes("clear") || cond.includes("sunny")) return "01d";
+    if (cond.includes("cloud")) return "03d";
+    if (cond.includes("rain")) return "10d";
+    if (cond.includes("storm")) return "11d";
+    return "01d";
+}
+
+// Method untuk memilih data terbaik
+selectBestData(dataArray, lat, lon) {
+    console.log(`🎯 Selecting best from ${dataArray.length} sources`);
+    
+    if (dataArray.length === 0) return null;
+    if (dataArray.length === 1) return dataArray[0];
+    
+    // Tampilkan semua data
+    dataArray.forEach((data, i) => {
+        console.log(`   ${i+1}. ${data.provider || data.apiSource}: UV ${data.uvIndex}, Temp ${data.temperature}°C`);
+    });
+    
+    // Priority order
+    const priorityOrder = ["OpenWeatherMap", "WeatherAPI.com", "Visual Crossing"];
+    
+    for (const provider of priorityOrder) {
+        const found = dataArray.find(d => 
+            d.provider === provider || d.apiSource === provider
+        );
+        if (found) {
+            console.log(`✅ Selected by priority: ${provider}`);
+            return found;
+        }
+    }
+    
+    // Filter data yang valid
+    const validData = dataArray.filter(d => 
+        d.uvIndex >= 0 && d.uvIndex <= 15 && 
+        d.temperature >= -50 && d.temperature <= 60
+    );
+    
+    if (validData.length > 0) {
+        // Ambil rata-rata UV dari semua sumber valid
+        const avgUV = validData.reduce((sum, d) => sum + d.uvIndex, 0) / validData.length;
+        
+        // Cari yang paling dekat dengan rata-rata
+        const closest = validData.reduce((prev, curr) => {
+            const prevDiff = Math.abs(prev.uvIndex - avgUV);
+            const currDiff = Math.abs(curr.uvIndex - avgUV);
+            return currDiff < prevDiff ? curr : prev;
+        });
+        
+        console.log(`✅ Selected: Closest to average UV ${avgUV.toFixed(1)}`);
+        return closest;
+    }
+    
+    // Fallback: data pertama
+    console.log("✅ Selected: First available");
+    return dataArray[0];
+}
+
 }
 
 // ==================== GLOBAL INITIALIZATION ====================
@@ -2673,4 +3984,6 @@ document.addEventListener('DOMContentLoaded', () => {
         console.error("❌ Fatal error initializing application:", error);
         alert(`Error inisialisasi aplikasi: ${error.message}\n\nCek console untuk detail.`);
     }
+
+    
 });

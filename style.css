@@ -914,7 +914,29 @@ p {
     margin: var(--spacing-lg) 0;
     border: 1px solid rgba(0, 102, 204, 0.1);
 }
+.weather-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid #eee;
+}
 
+.weather-row:last-child {
+    border-bottom: none;
+}
+
+.weather-label {
+    font-weight: 600;
+    color: #555;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.weather-value {
+    color: #333;
+    font-weight: 500;
+}
 .info-row {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
