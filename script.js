@@ -88,7 +88,11 @@ class UVGuardPro {
             { id: 31, name: "Papua Selatan", capital: "Merauke", lat: -8.4932, lon: 140.4018 },
             { id: 32, name: "Papua Tengah", capital: "Nabire", lat: -3.3667, lon: 135.4833 },
             { id: 33, name: "Papua Pegunungan", capital: "Wamena", lat: -4.0956, lon: 138.9550 },
-            { id: 34, name: "Papua Barat Daya", capital: "Sorong", lat: -0.8667, lon: 131.2500 }
+            { id: 34, name: "Papua Barat Daya", capital: "Sorong", lat: -0.8667, lon: 131.2500 },
+            { id: 35, name: "Nusa Tenggara Timur", capital: "Kupang", lat: -10.1772, lon: 123.6070 },
+            { id: 36, name: "Nusa Tenggara Barat", capital: "Mataram", lat: -8.5833, lon: 116.1167 },
+            { id: 37, name: "Aceh", capital: "Banda Aceh", lat: 5.5483, lon: 95.3238 },
+            { id: 38, name: "Kepulauan Bangka Belitung", capital: "Pangkal Pinang", lat: -2.1333, lon: 106.1333 }
         ];
         
         // Cache untuk hasil geocoding
@@ -1379,6 +1383,30 @@ async testMultiSourceAPIs() {
         }
     }
     
+    // ==================== FIX: UV NIGHT VALIDATION ====================
+validateUVForTime(uvIndex, lat, lon, timestamp) {
+    const now = timestamp || new Date();
+    const hour = now.getHours();
+    
+    // PERBAIKAN 1: Pastikan UV = 0 di malam hari
+    // Malam hari: 18:00 - 06:00 (untuk Indonesia)
+    const isNightTime = hour >= 18 || hour <= 6;
+    
+    // PERBAIKAN 2: Gunakan sunset/sunrise jika ada
+    if (this.currentData && this.currentData.sunrise && this.currentData.sunset) {
+        const sunriseHour = this.currentData.sunrise.getHours();
+        const sunsetHour = this.currentData.sunset.getHours();
+        isNightTime = hour < sunriseHour || hour > sunsetHour;
+    }
+    
+    if (isNightTime) {
+        console.log(`🌙 NIGHT TIME DETECTED: ${hour}:00, UV forced to 0`);
+        return 0; // UV HARUS 0 di malam hari
+    }
+    
+    return uvIndex;
+}
+
     async fetchAPIData() {
     const { lat, lon, name } = this.currentLocation;
     const apiConfig = this.MULTI_API_CONFIG.openweather;
@@ -1509,9 +1537,10 @@ async testMultiSourceAPIs() {
         
         // Jika malam hari, adjust UV index
         if (!isDaytime) {
-            console.log("🌙 Nighttime detected, reducing UV index");
-            uvIndex = Math.max(0, uvIndex * 0.1); // UV sangat rendah di malam hari
-        }
+    console.log("🌙 Nighttime detected - UV set to 0");
+    uvIndex = 0; 
+    uvIndex = this.validateUVForTime(uvIndex, lat, lon, now);
+    }
         
         return {
             uvIndex: parseFloat(uvIndex.toFixed(1)),
@@ -1574,7 +1603,7 @@ async testMultiSourceAPIs() {
         sunset.setHours(Math.floor(sunsetHour), Math.floor((sunsetHour % 1) * 60), 0, 0);
         
         // PERBAIKAN 4: UV hanya di siang hari, 0 di malam hari
-        const isDaytime = hour >= sunrise.getHours() && hour <= sunset.getHours();
+        const isDaytime = hour >= sunrise.getHours() && hour < sunset.getHours();
         
         let uvIndex = 0;
         
@@ -1804,7 +1833,20 @@ async testMultiSourceAPIs() {
                 uvValueElement.innerHTML += ' <span style="font-size:0.6em;color:#666">☀️</span>';
             }
         }
-        
+        if (uvIndex === 0) {
+    const titleElement = document.getElementById('pageTitle');
+    if (titleElement) {
+        titleElement.innerHTML = '🌙 UV Guard Pro - Malam Hari (UV: 0)';
+    }
+    
+    // Tambah badge khusus malam
+    const levelElement = document.getElementById('uvLevel');
+    if (levelElement) {
+        levelElement.textContent = "AMAN (MALAM)";
+        levelElement.style.backgroundColor = "#4169E1"; // Biru malam
+    }
+}
+
         // Update UV level badge
         const levelElement = document.getElementById('uvLevel');
         if (levelElement) {
@@ -3770,9 +3812,8 @@ async fetchFromWeatherAPI(lat, lon) {
         sunriseUTC.setHours(6, 0, 0); // Default sunrise 6:00
         sunsetUTC.setHours(18, 0, 0); // Default sunset 18:00
         
-        // Konversi ke WIB
-        const sunriseWIB = new Date(sunriseUTC.getTime() + (7 * 60 * 60 * 1000));
-        const sunsetWIB = new Date(sunsetUTC.getTime() + (7 * 60 * 60 * 1000));
+        const sunriseLocal = new Date(sunriseUTC);  // TANPA tambah jam!
+        const sunsetLocal = new Date(sunsetUTC);    // TANPA tambah jam!
         
         return {
             uvIndex: parseFloat(uvIndex.toFixed(1)),
@@ -3785,8 +3826,8 @@ async fetchFromWeatherAPI(lat, lon) {
             windSpeed: data.current.wind_kph / 3.6, // Convert km/h to m/s
             windDeg: data.current.wind_degree,
             clouds: data.current.cloud,
-            sunrise: sunriseWIB,
-            sunset: sunsetWIB,
+            sunrise: sunriseLocal,
+            sunset: sunsetLocal,
             cityName: data.location?.name || "Unknown",
             country: data.location?.country || "XX",
             timestamp: new Date(data.current.last_updated),
@@ -3843,8 +3884,8 @@ async fetchFromVisualCrossing(lat, lon) {
         const sunsetUTC = new Date(data.days[0]?.sunset || `${today}T18:00:00`);
         
         // Konversi ke WIB
-        const sunriseWIB = new Date(sunriseUTC.getTime() + (7 * 60 * 60 * 1000));
-        const sunsetWIB = new Date(sunsetUTC.getTime() + (7 * 60 * 60 * 1000));
+        const sunriseLocal = new Date(sunriseUTC);  // TANPA tambah jam!
+        const sunsetLocal = new Date(sunsetUTC);    // TANPA tambah jam!
         
         return {
             uvIndex: parseFloat(uvIndex.toFixed(1)),
